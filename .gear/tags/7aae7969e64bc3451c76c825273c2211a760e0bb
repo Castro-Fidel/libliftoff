@@ -1,0 +1,27 @@
+object e045589f37835d66e3ffe8130a597bb4eb9ee08f
+type commit
+tag v0.4.1
+tagger Simon Ser <contact@emersion.fr> 1678041407 +0100
+
+libliftoff v0.4.1
+
+Simon Ser (3):
+      plane: add NULL check to liftoff_plane_destroy()
+      Fix -Wsign-conversion on 32-bit
+      build: bump version to 0.4.1
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAABCAAdFiEENP+VJs/vDpejQOLkD9574OiPXkgFAmQE4UIACgkQD9574OiP
+XkjLQhAAqqrX74Zd/9spRWaz6tlX4aYtXnkbAOgFIgQEeTmZRl6fd2C4+gxpqaMx
+PBkMBSH41+Lw+nsePK9Kd+RBj2dB90kI7A16RB2lwDqTdRTk/yqaXI4U9ZVJnClc
+Nz5h9Byg/OJNJveDV5F3rrzxZhMGSzTpqT6P2JNlDWpnwvrspHt1m8aVBrYBsrQH
+UuL1XgsIDi5wZjImBB1pO2tqKJqLoWIpMEMFKFzQ+r27I4Dg70zezIkbHzIaD+kx
+zRjuCB3uy3C3iCE2F4l8EluVcJg+FcjFtMbu/HyIufbcicPo9sk62SIchNLOuqnj
+oMOJs/iy6piVpB0UJPMVSGVYbwHtQmjYxrQiWsqWF5C8Iuf4ZlXJph57EOY2XbsY
+CYpMbZQamXkCuHXYVUfiOKQZkwBn7xo0vRtu8ZvyThH5z7RFf2FGP8GoqZlSurnr
+W4pkbK87TD077VuyHlZXQFD/iIQ25vaHVbQBkgKoAYWI/FB942Y27ePw3dQnKPoP
+Pk+/krxOZO3TVDTi6OUACq7w+iJaikbOxD7Jib/8bWll7npN/jTjIjkkanRa2nBL
+uu1dL46MgPR17M72LPSKaJt+b+ain14YZn6Xk96cyCAoW5v/BgGkNtPRpQ/o6pL7
+VlBs3WdtgB0i0xG8ODG93SyHiWn4fgD3sexWWduSPiSO62swljw=
+=eEQB
+-----END PGP SIGNATURE-----
