@@ -2,6 +2,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include "private.h"
 
 static int
@@ -39,8 +40,7 @@ liftoff_plane_create(struct liftoff_device *device, uint32_t id)
 	drmModePlane *drm_plane;
 	drmModeObjectProperties *drm_props;
 	uint32_t i;
-	drmModePropertyRes *drm_prop;
-	struct liftoff_plane_property *prop;
+	drmModePropertyRes *prop;
 	uint64_t value;
 	bool has_type = false, has_zpos = false;
 
@@ -74,25 +74,20 @@ liftoff_plane_create(struct liftoff_device *device, uint32_t id)
 		liftoff_log_errno(LIFTOFF_ERROR, "drmModeObjectGetProperties");
 		return NULL;
 	}
-	plane->props = calloc(drm_props->count_props,
-			      sizeof(struct liftoff_plane_property));
+	plane->props = calloc(drm_props->count_props, sizeof(plane->props[0]));
 	if (plane->props == NULL) {
 		liftoff_log_errno(LIFTOFF_ERROR, "calloc");
 		drmModeFreeObjectProperties(drm_props);
 		return NULL;
 	}
 	for (i = 0; i < drm_props->count_props; i++) {
-		drm_prop = drmModeGetProperty(device->drm_fd,
-					      drm_props->props[i]);
-		if (drm_prop == NULL) {
+		prop = drmModeGetProperty(device->drm_fd, drm_props->props[i]);
+		if (prop == NULL) {
 			liftoff_log_errno(LIFTOFF_ERROR, "drmModeGetProperty");
 			drmModeFreeObjectProperties(drm_props);
 			return NULL;
 		}
-		prop = &plane->props[i];
-		memcpy(prop->name, drm_prop->name, sizeof(prop->name));
-		prop->id = drm_prop->prop_id;
-		drmModeFreeProperty(drm_prop);
+		plane->props[i] = prop;
 		plane->props_len++;
 
 		value = drm_props->prop_values[i];
@@ -102,6 +97,13 @@ liftoff_plane_create(struct liftoff_device *device, uint32_t id)
 		} else if (strcmp(prop->name, "zpos") == 0) {
 			plane->zpos = value;
 			has_zpos = true;
+		} else if (strcmp(prop->name, "IN_FORMATS") == 0) {
+			plane->in_formats_blob = drmModeGetPropertyBlob(device->drm_fd,
+									value);
+			if (plane->in_formats_blob == NULL) {
+				liftoff_log_errno(LIFTOFF_ERROR, "drmModeGetPropertyBlob");
+				return NULL;
+			}
 		}
 	}
 	drmModeFreeObjectProperties(drm_props);
@@ -144,11 +146,23 @@ liftoff_plane_create(struct liftoff_device *device, uint32_t id)
 void
 liftoff_plane_destroy(struct liftoff_plane *plane)
 {
+	size_t i;
+
+	if (plane == NULL) {
+		return;
+	}
+
 	if (plane->layer != NULL) {
 		plane->layer->plane = NULL;
 	}
+
+	for (i = 0; i < plane->props_len; i++) {
+		drmModeFreeProperty(plane->props[i]);
+	}
+
 	liftoff_list_remove(&plane->link);
 	free(plane->props);
+	drmModeFreePropertyBlob(plane->in_formats_blob);
 	free(plane);
 }
 
@@ -158,26 +172,100 @@ liftoff_plane_get_id(struct liftoff_plane *plane)
 	return plane->id;
 }
 
-static struct liftoff_plane_property *
+static const drmModePropertyRes *
 plane_get_property(struct liftoff_plane *plane, const char *name)
 {
 	size_t i;
 
 	for (i = 0; i < plane->props_len; i++) {
-		if (strcmp(plane->props[i].name, name) == 0) {
-			return &plane->props[i];
+		if (strcmp(plane->props[i]->name, name) == 0) {
+			return plane->props[i];
 		}
 	}
 	return NULL;
 }
 
 static int
+check_range_prop(const drmModePropertyRes *prop, uint64_t value)
+{
+	if (value < prop->values[0] || value > prop->values[1]) {
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
+check_enum_prop(const drmModePropertyRes *prop, uint64_t value)
+{
+	int i;
+
+	for (i = 0; i < prop->count_enums; i++) {
+		if (prop->enums[i].value == value) {
+			return 0;
+		}
+	}
+	return -EINVAL;
+}
+
+static int
+check_bitmask_prop(const drmModePropertyRes *prop, uint64_t value)
+{
+	int i;
+	uint64_t mask;
+
+	mask = 0;
+	for (i = 0; i < prop->count_enums; i++) {
+		mask |= (uint64_t)1 << prop->enums[i].value;
+	}
+
+	if ((value & ~mask) != 0) {
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
+check_signed_range_prop(const drmModePropertyRes *prop, uint64_t value)
+{
+	if ((int64_t) value < (int64_t) prop->values[0] ||
+	    (int64_t) value > (int64_t) prop->values[1]) {
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
 plane_set_prop(struct liftoff_plane *plane, drmModeAtomicReq *req,
-	       struct liftoff_plane_property *prop, uint64_t value)
+	       const drmModePropertyRes *prop, uint64_t value)
 {
 	int ret;
 
-	ret = drmModeAtomicAddProperty(req, plane->id, prop->id, value);
+	if (prop->flags & DRM_MODE_PROP_IMMUTABLE) {
+		return -EINVAL;
+	}
+
+	/* Manually check the property value if we can: this may avoid
+	 * unnecessary test commits */
+	ret = 0;
+	switch (drmModeGetPropertyType(prop)) {
+	case DRM_MODE_PROP_RANGE:
+		ret = check_range_prop(prop, value);
+		break;
+	case DRM_MODE_PROP_ENUM:
+		ret = check_enum_prop(prop, value);
+		break;
+	case DRM_MODE_PROP_BITMASK:
+		ret = check_bitmask_prop(prop, value);
+		break;
+	case DRM_MODE_PROP_SIGNED_RANGE:
+		ret = check_signed_range_prop(prop, value);
+		break;
+	}
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = drmModeAtomicAddProperty(req, plane->id, prop->prop_id, value);
 	if (ret < 0) {
 		liftoff_log(LIFTOFF_ERROR, "drmModeAtomicAddProperty: %s",
 			    strerror(-ret));
@@ -191,7 +279,7 @@ static int
 set_plane_prop_str(struct liftoff_plane *plane, drmModeAtomicReq *req,
 		   const char *name, uint64_t value)
 {
-	struct liftoff_plane_property *prop;
+	const drmModePropertyRes *prop;
 
 	prop = plane_get_property(plane, name);
 	if (prop == NULL) {
@@ -204,6 +292,57 @@ set_plane_prop_str(struct liftoff_plane *plane, drmModeAtomicReq *req,
 	return plane_set_prop(plane, req, prop, value);
 }
 
+bool
+plane_check_layer_fb(struct liftoff_plane *plane, struct liftoff_layer *layer)
+{
+	const struct drm_format_modifier_blob *set;
+	const uint32_t *formats;
+	const struct drm_format_modifier *modifiers;
+	size_t i;
+	ssize_t format_index, modifier_index;
+	int format_shift;
+
+	/* TODO: add support for legacy format list with implicit modifier */
+	if (layer->fb_info.fb_id == 0 ||
+	    !(layer->fb_info.flags & DRM_MODE_FB_MODIFIERS) ||
+	    plane->in_formats_blob == NULL) {
+		return true; /* not enough information to reject */
+	}
+
+	set = plane->in_formats_blob->data;
+
+	formats = (void *)((char *)set + set->formats_offset);
+	format_index = -1;
+	for (i = 0; i < set->count_formats; ++i) {
+		if (formats[i] == layer->fb_info.pixel_format) {
+			format_index = (ssize_t)i;
+			break;
+		}
+	}
+	if (format_index < 0) {
+		return false;
+	}
+
+	modifiers = (void *)((char *)set + set->modifiers_offset);
+	modifier_index = -1;
+	for (i = 0; i < set->count_modifiers; i++) {
+		if (modifiers[i].modifier == layer->fb_info.modifier) {
+			modifier_index = (ssize_t)i;
+			break;
+		}
+	}
+	if (modifier_index < 0) {
+		return false;
+	}
+
+	if ((size_t)format_index < modifiers[modifier_index].offset ||
+	    (size_t)format_index >= modifiers[modifier_index].offset + 64) {
+		return false;
+	}
+	format_shift = format_index - (int)modifiers[modifier_index].offset;
+	return (modifiers[modifier_index].formats & ((uint64_t)1 << format_shift)) != 0;
+}
+
 int
 plane_apply(struct liftoff_plane *plane, struct liftoff_layer *layer,
 	    drmModeAtomicReq *req)
@@ -211,7 +350,7 @@ plane_apply(struct liftoff_plane *plane, struct liftoff_layer *layer,
 	int cursor, ret;
 	size_t i;
 	struct liftoff_layer_property *layer_prop;
-	struct liftoff_plane_property *plane_prop;
+	const drmModePropertyRes *plane_prop;
 
 	cursor = drmModeAtomicGetCursor(req);
 
@@ -245,6 +384,17 @@ plane_apply(struct liftoff_plane *plane, struct liftoff_layer *layer,
 			if (strcmp(layer_prop->name, "rotation") == 0 &&
 			    layer_prop->value == DRM_MODE_ROTATE_0) {
 				continue; /* Layer isn't rotated */
+			}
+			if (strcmp(layer_prop->name, "SCALING_FILTER") == 0 &&
+			    layer_prop->value == 0) {
+				continue; /* Layer uses default scaling filter */
+			}
+			if (strcmp(layer_prop->name, "pixel blend mode") == 0 &&
+			    layer_prop->value == 0) {
+				continue; /* Layer uses pre-multiplied alpha */
+			}
+			if (strcmp(layer_prop->name, "FB_DAMAGE_CLIPS") == 0) {
+				continue; /* Damage can be omitted */
 			}
 			drmModeAtomicSetCursor(req, cursor);
 			return -EINVAL;

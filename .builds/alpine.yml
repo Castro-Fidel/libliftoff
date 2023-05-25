@@ -2,6 +2,7 @@ image: alpine/edge
 packages:
   - gcc
   - clang
+  - compiler-rt
   - meson
   - libdrm-dev
   - gcovr
@@ -12,8 +13,8 @@ artifacts:
 tasks:
   - setup: |
       cd libliftoff
-      CC=gcc meson build-gcc/ -Db_coverage=true
-      CC=clang meson build-clang/
+      CC=gcc meson build-gcc/ --fatal-meson-warnings -Db_coverage=true
+      CC=clang meson build-clang/ --fatal-meson-warnings -Db_sanitize=address,undefined -Db_lundef=false
   - build-gcc: |
       cd libliftoff
       ninja -C build-gcc/
@@ -32,4 +33,4 @@ tasks:
       echo "exclude-directories = example/" >>gcovr.cfg
       ninja -C build-gcc/ coverage-html
       cd build-gcc/meson-logs/
-      tar -czvf ~/coveragereport.tar.gz coveragereport
+      tar -czf ~/coveragereport.tar.gz coveragereport

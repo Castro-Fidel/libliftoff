@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <drm_fourcc.h>
 #include <unistd.h>
 #include <libliftoff.h>
 #include <stdbool.h>
@@ -28,14 +29,14 @@ add_layer(struct liftoff_output *output, int x, int y, int width, int height)
 	layer = liftoff_layer_create(output);
 	fb_id = liftoff_mock_drm_create_fb(layer);
 	liftoff_layer_set_property(layer, "FB_ID", fb_id);
-	liftoff_layer_set_property(layer, "CRTC_X", x);
-	liftoff_layer_set_property(layer, "CRTC_Y", y);
-	liftoff_layer_set_property(layer, "CRTC_W", width);
-	liftoff_layer_set_property(layer, "CRTC_H", height);
+	liftoff_layer_set_property(layer, "CRTC_X", (uint64_t)x);
+	liftoff_layer_set_property(layer, "CRTC_Y", (uint64_t)y);
+	liftoff_layer_set_property(layer, "CRTC_W", (uint64_t)width);
+	liftoff_layer_set_property(layer, "CRTC_H", (uint64_t)height);
 	liftoff_layer_set_property(layer, "SRC_X", 0);
 	liftoff_layer_set_property(layer, "SRC_Y", 0);
-	liftoff_layer_set_property(layer, "SRC_W", width << 16);
-	liftoff_layer_set_property(layer, "SRC_H", height << 16);
+	liftoff_layer_set_property(layer, "SRC_W", (uint64_t)width << 16);
+	liftoff_layer_set_property(layer, "SRC_H", (uint64_t)height << 16);
 
 	return layer;
 }
@@ -100,13 +101,63 @@ run_same(struct context *ctx)
 static void
 run_change_fb(struct context *ctx)
 {
+	uint32_t fb_id;
+	drmModeFB2 fb_info;
+
+	fb_id = liftoff_mock_drm_create_fb(ctx->layer);
+	fb_info = (drmModeFB2) {
+		.fb_id = fb_id,
+		.width = 1920,
+		.height = 1080,
+		.flags = DRM_MODE_FB_MODIFIERS,
+		.pixel_format = DRM_FORMAT_ARGB8888,
+		.modifier = DRM_FORMAT_MOD_LINEAR,
+	};
+	liftoff_mock_drm_set_fb_info(&fb_info);
+	liftoff_layer_set_property(ctx->layer, "FB_ID", fb_id);
+
 	first_commit(ctx);
 	assert(liftoff_mock_plane_get_layer(ctx->mock_plane) == ctx->layer);
 
-	liftoff_layer_set_property(ctx->layer, "FB_ID",
-				   liftoff_mock_drm_create_fb(ctx->layer));
+	/* Create a new FB with the exact same FB info as the first one. */
+	fb_id = liftoff_mock_drm_create_fb(ctx->layer);
+	fb_info.fb_id = fb_id;
+	liftoff_mock_drm_set_fb_info(&fb_info);
+	liftoff_layer_set_property(ctx->layer, "FB_ID", fb_id);
 
 	second_commit(ctx, true);
+	assert(liftoff_mock_plane_get_layer(ctx->mock_plane) == ctx->layer);
+}
+
+static void
+run_change_fb_modifier(struct context *ctx)
+{
+	uint32_t fb_id;
+	drmModeFB2 fb_info;
+
+	fb_id = liftoff_mock_drm_create_fb(ctx->layer);
+	fb_info = (drmModeFB2) {
+		.fb_id = fb_id,
+		.width = 1920,
+		.height = 1080,
+		.flags = DRM_MODE_FB_MODIFIERS,
+		.pixel_format = DRM_FORMAT_ARGB8888,
+		.modifier = I915_FORMAT_MOD_Y_TILED,
+	};
+	liftoff_mock_drm_set_fb_info(&fb_info);
+	liftoff_layer_set_property(ctx->layer, "FB_ID", fb_id);
+
+	first_commit(ctx);
+	assert(liftoff_mock_plane_get_layer(ctx->mock_plane) == ctx->layer);
+
+	/* Simulate the situation where the previous FB gets removed, and a new
+	 * one gets re-created with the same FB ID but a different modifier.
+	 * This should prevent the first configuration from being re-used. */
+	fb_info.modifier = I915_FORMAT_MOD_X_TILED;
+	liftoff_mock_drm_set_fb_info(&fb_info);
+	liftoff_layer_set_property(ctx->layer, "FB_ID", fb_id);
+
+	second_commit(ctx, false);
 	assert(liftoff_mock_plane_get_layer(ctx->mock_plane) == ctx->layer);
 }
 
@@ -274,6 +325,7 @@ run_change_fb_damage_clips(struct context *ctx)
 static const struct test_case tests[] = {
 	{ .name = "same", .run = run_same },
 	{ .name = "change-fb", .run = run_change_fb },
+	{ .name = "change-fb-modifier", .run = run_change_fb_modifier },
 	{ .name = "unset-fb", .run = run_unset_fb },
 	{ .name = "set-fb", .run = run_set_fb },
 	{ .name = "add-layer", .run = run_add_layer },
@@ -308,17 +360,17 @@ run(const struct test_case *test)
 	prop_name = "alpha";
 	prop = (drmModePropertyRes){0};
 	strncpy(prop.name, prop_name, sizeof(prop.name) - 1);
-	liftoff_mock_plane_add_property(ctx.mock_plane, &prop);
+	liftoff_mock_plane_add_property(ctx.mock_plane, &prop, 0);
 
 	prop_name = "IN_FENCE_FD";
 	prop = (drmModePropertyRes){0};
 	strncpy(prop.name, prop_name, sizeof(prop.name) - 1);
-	liftoff_mock_plane_add_property(ctx.mock_plane, &prop);
+	liftoff_mock_plane_add_property(ctx.mock_plane, &prop, (uint64_t)-1);
 
 	prop_name = "FB_DAMAGE_CLIPS";
 	prop = (drmModePropertyRes){0};
 	strncpy(prop.name, prop_name, sizeof(prop.name) - 1);
-	liftoff_mock_plane_add_property(ctx.mock_plane, &prop);
+	liftoff_mock_plane_add_property(ctx.mock_plane, &prop, 0);
 
 	ctx.drm_fd = liftoff_mock_drm_open();
 	device = liftoff_device_create(ctx.drm_fd);

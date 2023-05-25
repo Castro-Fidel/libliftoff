@@ -18,6 +18,8 @@ struct liftoff_device {
 	uint32_t *crtcs;
 	size_t crtcs_len;
 
+	size_t planes_cap; /* max number of planes */
+
 	int page_flip_counter;
 	int test_commit_counter;
 };
@@ -48,9 +50,13 @@ struct liftoff_layer {
 
 	struct liftoff_plane *plane;
 
+	/* Array of plane IDs with a length of liftoff_device.planes_cap */
+	uint32_t *candidate_planes;
+
 	int current_priority, pending_priority;
 	/* prop added or force_composition changed */
 	bool changed;
+	drmModeFB2 fb_info, prev_fb_info; /* cached FB info */
 };
 
 struct liftoff_layer_property {
@@ -66,15 +72,11 @@ struct liftoff_plane {
 	/* TODO: formats */
 	struct liftoff_list link; /* liftoff_device.planes */
 
-	struct liftoff_plane_property *props;
+	drmModePropertyRes **props;
 	size_t props_len;
+	drmModePropertyBlobRes *in_formats_blob;
 
 	struct liftoff_layer *layer;
-};
-
-struct liftoff_plane_property {
-	char name[DRM_PROP_NAME_LEN];
-	uint32_t id;
 };
 
 struct liftoff_rect {
@@ -104,12 +106,25 @@ layer_update_priority(struct liftoff_layer *layer, bool make_current);
 bool
 layer_has_fb(struct liftoff_layer *layer);
 
+void
+layer_add_candidate_plane(struct liftoff_layer *layer,
+			  struct liftoff_plane *plane);
+
+void
+layer_reset_candidate_planes(struct liftoff_layer *layer);
+
 bool
 layer_is_visible(struct liftoff_layer *layer);
 
 int
+layer_cache_fb_info(struct liftoff_layer *layer);
+
+int
 plane_apply(struct liftoff_plane *plane, struct liftoff_layer *layer,
 	    drmModeAtomicReq *req);
+
+bool
+plane_check_layer_fb(struct liftoff_plane *plane, struct liftoff_layer *layer);
 
 void
 output_log_layers(struct liftoff_output *output);

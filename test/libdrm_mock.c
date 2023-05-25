@@ -14,7 +14,10 @@
 #define MAX_PLANE_PROPS 64
 #define MAX_REQ_PROPS 1024
 
-uint32_t liftoff_mock_drm_crtc_id = 0xCC000000;
+#define OBJ_INDEX_MASK 0x00FFFFFF
+#define OBJ_TYPE_MASK 0xFF000000
+
+uint32_t liftoff_mock_drm_crtc_id = DRM_MODE_OBJECT_CRTC & OBJ_TYPE_MASK;
 size_t liftoff_mock_commit_count = 0;
 bool liftoff_mock_require_primary_plane = false;
 
@@ -30,6 +33,11 @@ struct liftoff_mock_prop {
 	uint64_t value;
 };
 
+struct liftoff_mock_fb {
+	struct liftoff_layer *layer;
+	drmModeFB2 info;
+};
+
 struct _drmModeAtomicReq {
 	struct liftoff_mock_prop props[MAX_REQ_PROPS];
 	int cursor;
@@ -37,7 +45,8 @@ struct _drmModeAtomicReq {
 
 static int mock_pipe[2] = {-1, -1};
 static struct liftoff_mock_plane mock_planes[MAX_PLANES];
-static struct liftoff_layer *mock_fbs[MAX_LAYERS];
+static struct liftoff_mock_fb mock_fbs[MAX_LAYERS];
+static drmModePropertyBlobRes mock_blobs[MAX_PLANES];
 
 enum plane_prop {
 	PLANE_TYPE,
@@ -66,6 +75,20 @@ static drmModePropertyRes plane_props[MAX_PLANE_PROPS] = {0};
 
 static size_t plane_props_len = 0;
 
+static uint32_t
+object_id(size_t index, uint32_t type)
+{
+	assert((type & OBJ_TYPE_MASK) != 0);
+	return index | (type & OBJ_TYPE_MASK);
+}
+
+static size_t
+object_index(uint32_t id, uint32_t type)
+{
+	assert((id & OBJ_TYPE_MASK) == (type & OBJ_TYPE_MASK));
+	return id & OBJ_INDEX_MASK;
+}
+
 static void
 assert_drm_fd(int fd)
 {
@@ -89,7 +112,7 @@ register_prop(const drmModePropertyRes *prop)
 	assert(plane_props_len < MAX_PLANE_PROPS);
 	dst = &plane_props[plane_props_len];
 	memcpy(dst, prop, sizeof(*dst));
-	dst->prop_id = 0xB0000000 + plane_props_len;
+	dst->prop_id = object_id(plane_props_len, DRM_MODE_OBJECT_PROPERTY);
 	plane_props_len++;
 
 	return dst->prop_id;
@@ -126,7 +149,7 @@ liftoff_mock_drm_open(void)
 }
 
 struct liftoff_mock_plane *
-liftoff_mock_drm_create_plane(int type)
+liftoff_mock_drm_create_plane(uint64_t type)
 {
 	struct liftoff_mock_plane *plane;
 	size_t i;
@@ -142,7 +165,7 @@ liftoff_mock_drm_create_plane(int type)
 		i++;
 	}
 
-	plane->id = 0xEE000000 + i;
+	plane->id = object_id(i, DRM_MODE_OBJECT_PLANE);
 	plane->prop_values[PLANE_TYPE] = type;
 
 	for (size_t i = 0; i < basic_plane_props_len; i++) {
@@ -185,18 +208,38 @@ liftoff_mock_plane_add_compatible_layer(struct liftoff_mock_plane *plane,
 }
 
 uint32_t
+liftoff_mock_plane_get_id(struct liftoff_mock_plane *plane)
+{
+	return plane->id;
+}
+
+uint32_t
 liftoff_mock_drm_create_fb(struct liftoff_layer *layer)
 {
 	size_t i;
+	uint32_t fb_id;
 
 	i = 0;
-	while (mock_fbs[i] != 0) {
+	while (mock_fbs[i].layer != NULL) {
 		i++;
 	}
 
-	mock_fbs[i] = layer;
+	fb_id = object_id(i, DRM_MODE_OBJECT_FB);
 
-	return 0xFB000000 + i;
+	mock_fbs[i] = (struct liftoff_mock_fb) {
+		.layer = layer,
+	};
+
+	return fb_id;
+}
+
+void
+liftoff_mock_drm_set_fb_info(const drmModeFB2 *fb_info)
+{
+	size_t i;
+
+	i = object_index(fb_info->fb_id, DRM_MODE_OBJECT_FB);
+	mock_fbs[i].info = *fb_info;
 }
 
 static bool
@@ -206,7 +249,7 @@ mock_atomic_req_get_property(drmModeAtomicReq *req, uint32_t obj_id,
 	ssize_t i;
 	uint32_t prop_id;
 
-	prop_id = 0xB0000000 + prop;
+	prop_id = object_id(prop, DRM_MODE_OBJECT_PROPERTY);
 	for (i = req->cursor - 1; i >= 0; i--) {
 		if (req->props[i].obj_id == obj_id &&
 		    req->props[i].prop_id == prop_id) {
@@ -227,12 +270,10 @@ mock_fb_get_layer(uint32_t fb_id)
 		return NULL;
 	}
 
-	assert((fb_id & 0xFF000000) == 0xFB000000);
-
-	i = fb_id & 0x00FFFFFF;
+	i = object_index(fb_id, DRM_MODE_OBJECT_FB);
 	assert(i < MAX_LAYERS);
 
-	return mock_fbs[i];
+	return mock_fbs[i].layer;
 }
 
 struct liftoff_layer *
@@ -246,9 +287,7 @@ get_prop_index(uint32_t id)
 {
 	size_t i;
 
-	assert((id & 0xFF000000) == 0xB0000000);
-
-	i = id & 0x00FFFFFF;
+	i = object_index(id, DRM_MODE_OBJECT_PROPERTY);
 	assert(i < plane_props_len);
 
 	return i;
@@ -256,16 +295,55 @@ get_prop_index(uint32_t id)
 
 uint32_t
 liftoff_mock_plane_add_property(struct liftoff_mock_plane *plane,
-				const drmModePropertyRes *prop)
+				const drmModePropertyRes *prop,
+				uint64_t value)
 {
 	uint32_t prop_id;
 
 	prop_id = register_prop(prop);
 	plane->enabled_props[get_prop_index(prop_id)] = true;
-	if (prop->count_values == 1) {
-		plane->prop_values[get_prop_index(prop_id)] = prop->values[0];
-	}
+	plane->prop_values[get_prop_index(prop_id)] = value;
 	return prop_id;
+}
+
+static uint32_t
+register_blob(size_t size, const void *data)
+{
+	size_t i;
+	uint32_t blob_id;
+	void *copy;
+
+	i = 0;
+	while (mock_blobs[i].id != 0) {
+		i++;
+		assert(i < sizeof(mock_blobs) / sizeof(mock_blobs[0]));
+	}
+
+	copy = malloc(size);
+	memcpy(copy, data, size);
+
+	blob_id = object_id(i, DRM_MODE_OBJECT_BLOB);
+	mock_blobs[i] = (drmModePropertyBlobRes) {
+		.id = blob_id,
+		.length = size,
+		.data = copy,
+	};
+	return blob_id;
+}
+
+void
+liftoff_mock_plane_add_in_formats(struct liftoff_mock_plane *plane,
+				  const struct drm_format_modifier_blob *data,
+				  size_t size)
+{
+	uint32_t blob_id;
+	drmModePropertyRes prop = {0};
+
+	blob_id = register_blob(size, data);
+
+	strncpy(prop.name, "IN_FORMATS", sizeof(prop.name) - 1);
+	/* TODO: fill flags */
+	liftoff_mock_plane_add_property(plane, &prop, blob_id);
 }
 
 static void
@@ -528,4 +606,84 @@ void
 drmModeAtomicSetCursor(drmModeAtomicReq *req, int cursor)
 {
 	req->cursor = cursor;
+}
+
+drmModeFB2 *
+drmModeGetFB2(int fd, uint32_t fb_id)
+{
+	size_t i;
+	drmModeFB2 *fb2;
+
+	i = object_index(fb_id, DRM_MODE_OBJECT_FB);
+	assert(i < MAX_LAYERS);
+
+	if (mock_fbs[i].info.fb_id == 0) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	fb2 = malloc(sizeof(*fb2));
+	if (fb2 == NULL) {
+		return NULL;
+	}
+	*fb2 = mock_fbs[i].info;
+	return fb2;
+}
+
+void
+drmModeFreeFB2(drmModeFB2 *fb2)
+{
+	free(fb2);
+}
+
+int
+drmCloseBufferHandle(int fd, uint32_t handle)
+{
+	errno = EINVAL;
+	return -EINVAL;
+}
+
+drmModePropertyBlobRes *
+drmModeGetPropertyBlob(int fd, uint32_t blob_id)
+{
+	size_t i;
+	drmModePropertyBlobRes *blob;
+	void *data;
+
+	i = object_index(blob_id, DRM_MODE_OBJECT_BLOB);
+	assert(i < sizeof(mock_blobs) / sizeof(mock_blobs[0]));
+
+	if (mock_blobs[i].id == 0) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	blob = malloc(sizeof(*blob));
+	if (blob == NULL) {
+		return NULL;
+	}
+
+	data = malloc(mock_blobs[i].length);
+	if (data == NULL) {
+		free(blob);
+		return NULL;
+	}
+	memcpy(data, mock_blobs[i].data, mock_blobs[i].length);
+
+	*blob = (drmModePropertyBlobRes) {
+		.id = blob_id,
+		.length = mock_blobs[i].length,
+		.data = data,
+	};
+	return blob;
+}
+
+void
+drmModeFreePropertyBlob(drmModePropertyBlobRes *blob)
+{
+	if (blob == NULL) {
+		return;
+	}
+	free(blob->data);
+	free(blob);
 }

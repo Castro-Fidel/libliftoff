@@ -1,15 +1,17 @@
+drm_partial = drm.partial_dependency(compile_args: true, includes: true)
+
 # This mock library will replace libdrm
 mock_drm_lib = shared_library(
 	'drm',
 	files('libdrm_mock.c'),
-	dependencies: drm.partial_dependency(compile_args: true),
+	dependencies: drm_partial,
 	soversion: drm.version().split('.')[0], # TODO: get it from the real dep
 )
 
 mock_liftoff = declare_dependency(
 	link_with: [mock_drm_lib, liftoff_lib],
 	include_directories: [liftoff_inc],
-	dependencies: drm.partial_dependency(compile_args: true),
+	dependencies: drm_partial,
 )
 
 test('check_ndebug', executable('check_ndebug', 'check_ndebug.c'))
@@ -52,6 +54,7 @@ tests = {
 	'dynamic': [
 		'same',
 		'change-fb',
+		'change-fb-modifier',
 		'unset-fb',
 		'set-fb',
 		'add-layer',
@@ -74,6 +77,15 @@ tests = {
 		'ignore-alpha',
 		'immutable-zpos',
 		'unmatched',
+		'unset',
+		'in-formats',
+		'range',
+		'signed-range',
+		'enum',
+		'bitmask',
+	],
+	'candidate': [
+		'basic',
 	],
 }
 

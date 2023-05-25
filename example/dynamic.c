@@ -35,7 +35,7 @@ static size_t active_layer_idx = 2;
 
 static bool
 init_layer(int drm_fd, struct example_layer *layer,
-	   struct liftoff_output *output, int width, int height,
+	   struct liftoff_output *output, uint32_t width, uint32_t height,
 	   bool with_alpha)
 {
 	static size_t color_idx = 0;
@@ -60,7 +60,7 @@ init_layer(int drm_fd, struct example_layer *layer,
 	layer->color[color_idx % 3] = color_value;
 	color_idx++;
 	if (color_idx % 3 == 0) {
-		color_value -= 0.1;
+		color_value -= 0.1f;
 	}
 
 	return true;
@@ -83,8 +83,8 @@ draw_layer(int drm_fd, struct example_layer *layer)
 	dumb_fb_fill(fb, drm_fd, color);
 
 	liftoff_layer_set_property(layer->layer, "FB_ID", fb->id);
-	liftoff_layer_set_property(layer->layer, "CRTC_X", layer->x);
-	liftoff_layer_set_property(layer->layer, "CRTC_Y", layer->y);
+	liftoff_layer_set_property(layer->layer, "CRTC_X", (uint64_t)layer->x);
+	liftoff_layer_set_property(layer->layer, "CRTC_Y", (uint64_t)layer->y);
 }
 
 static bool
@@ -101,8 +101,8 @@ draw(void)
 
 	inc = (active_layer->dec + 1) % 3;
 
-	active_layer->color[inc] += 0.05;
-	active_layer->color[active_layer->dec] -= 0.05;
+	active_layer->color[inc] += 0.05f;
+	active_layer->color[active_layer->dec] -= 0.05f;
 
 	if (active_layer->color[active_layer->dec] < 0.0f) {
 		active_layer->color[inc] = 1.0f;
@@ -199,8 +199,8 @@ main(int argc, char *argv[])
 		   crtc->mode.vdisplay, false);
 	for (i = 1; i < LAYERS_LEN; i++) {
 		init_layer(drm_fd, &layers[i], output, 100, 100, i % 2);
-		layers[i].x = 100 * i;
-		layers[i].y = 100 * i;
+		layers[i].x = 100 * (int)i;
+		layers[i].y = 100 * (int)i;
 	}
 
 	for (i = 0; i < LAYERS_LEN; i++) {

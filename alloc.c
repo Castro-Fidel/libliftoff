@@ -439,7 +439,7 @@ output_choose_layers(struct liftoff_output *output, struct alloc_result *result,
 		    step->log_prefix, plane->id, step->plane_idx + 1, result->planes_len);
 
 	liftoff_list_for_each(layer, &output->layers, link) {
-		if (layer->plane != NULL || layer->force_composition) {
+		if (layer->plane != NULL) {
 			continue;
 		}
 		if (!layer_is_visible(layer)) {
@@ -459,6 +459,18 @@ output_choose_layers(struct liftoff_output *output, struct alloc_result *result,
 			continue;
 		} else if (ret != 0) {
 			return ret;
+		}
+
+		layer_add_candidate_plane(layer, plane);
+
+		/* If composition is forced, wait until after the
+		 * layer_add_candidate_plane() call to reject the plane: we want
+		 * to return a meaningful list of candidate planes so that the
+		 * API user has the opportunity to re-allocate its buffers with
+		 * scanout-capable ones. Same deal for the FB check. */
+		if (layer->force_composition || !plane_check_layer_fb(plane, layer)) {
+			drmModeAtomicSetCursor(result->req, cursor);
+			continue;
 		}
 
 		ret = device_test_commit(device, result->req, result->flags);
@@ -507,7 +519,6 @@ apply_current(struct liftoff_device *device, drmModeAtomicReq *req)
 
 	liftoff_list_for_each(plane, &device->planes, link) {
 		ret = plane_apply(plane, plane->layer, req);
-		assert(ret != -EINVAL);
 		if (ret != 0) {
 			drmModeAtomicSetCursor(req, cursor);
 			return ret;
@@ -518,32 +529,64 @@ apply_current(struct liftoff_device *device, drmModeAtomicReq *req)
 }
 
 static bool
+fb_info_needs_realloc(const drmModeFB2 *a, const drmModeFB2 *b)
+{
+	if (a->width != b->width || a->height != b->height ||
+	    a->pixel_format != b->pixel_format || a->modifier != b->modifier) {
+		return true;
+	}
+
+	/* TODO: consider checking pitch and offset? */
+
+	return false;
+}
+
+static bool
 layer_needs_realloc(struct liftoff_layer *layer)
 {
 	size_t i;
 	struct liftoff_layer_property *prop;
 
 	if (layer->changed) {
+		liftoff_log(LIFTOFF_DEBUG, "Cannot re-use previous allocation: "
+			    "layer property added or force composition changed");
 		return true;
 	}
 
 	for (i = 0; i < layer->props_len; i++) {
 		prop = &layer->props[i];
-		if (prop->value == prop->prev_value) {
-			continue;
-		}
 
 		/* If FB_ID changes from non-zero to zero, we don't need to
 		 * display this layer anymore, so we may be able to re-use its
 		 * plane for another layer. If FB_ID changes from zero to
 		 * non-zero, we might be able to find a plane for this layer.
-		 * If FB_ID changes from non-zero to non-zero, we can try to
-		 * re-use the previous allocation. */
+		 * If FB_ID changes from non-zero to non-zero and the FB
+		 * attributes didn't change, we can try to re-use the previous
+		 * allocation. */
 		if (strcmp(prop->name, "FB_ID") == 0) {
+			if (prop->value == 0 && prop->prev_value == 0) {
+				continue;
+			}
+
 			if (prop->value == 0 || prop->prev_value == 0) {
+				liftoff_log(LIFTOFF_DEBUG, "Cannot re-use previous allocation: "
+					    "layer enabled or disabled");
 				return true;
 			}
-			/* TODO: check format/modifier is the same? */
+
+			if (fb_info_needs_realloc(&layer->fb_info,
+						  &layer->prev_fb_info)) {
+				liftoff_log(LIFTOFF_DEBUG, "Cannot re-use previous allocation: "
+					    "FB info changed");
+				return true;
+			}
+
+			continue;
+		}
+
+		/* For all properties except FB_ID, we can skip realloc if the
+		 * value didn't change. */
+		if (prop->value == prop->prev_value) {
 			continue;
 		}
 
@@ -553,6 +596,8 @@ layer_needs_realloc(struct liftoff_layer *layer)
 		if (strcmp(prop->name, "alpha") == 0) {
 			if (prop->value == 0 || prop->prev_value == 0 ||
 			    prop->value == 0xFFFF || prop->prev_value == 0xFFFF) {
+				liftoff_log(LIFTOFF_DEBUG, "Cannot re-use previous allocation: "
+					    "alpha changed");
 				return true;
 			}
 			continue;
@@ -567,6 +612,8 @@ layer_needs_realloc(struct liftoff_layer *layer)
 
 		/* TODO: if CRTC_{X,Y,W,H} changed but intersection with other
 		 * layers hasn't changed, don't realloc */
+		liftoff_log(LIFTOFF_DEBUG, "Cannot re-use previous allocation: "
+			    "property \"%s\" changed", prop->name);
 		return true;
 	}
 
@@ -584,6 +631,8 @@ reuse_previous_alloc(struct liftoff_output *output, drmModeAtomicReq *req,
 	device = output->device;
 
 	if (output->layers_changed) {
+		liftoff_log(LIFTOFF_DEBUG, "Cannot re-use previous allocation: "
+			    "a layer has been added or removed");
 		return -EINVAL;
 	}
 
@@ -624,10 +673,10 @@ update_layers_priority(struct liftoff_device *device)
 {
 	struct liftoff_output *output;
 	struct liftoff_layer *layer;
+	bool period_elapsed;
 
 	device->page_flip_counter++;
-	bool period_elapsed =
-		device->page_flip_counter >= LIFTOFF_PRIORITY_PERIOD;
+	period_elapsed = device->page_flip_counter >= LIFTOFF_PRIORITY_PERIOD;
 	if (period_elapsed) {
 		device->page_flip_counter = 0;
 	}
@@ -636,6 +685,22 @@ update_layers_priority(struct liftoff_device *device)
 		liftoff_list_for_each(layer, &output->layers, link) {
 			layer_update_priority(layer, period_elapsed);
 		}
+	}
+}
+
+static void
+update_layers_fb_info(struct liftoff_output *output)
+{
+	struct liftoff_layer *layer;
+
+	/* We don't know what the library user did in-between
+	 * liftoff_output_apply() calls. They might've removed the FB and
+	 * re-created a completely different one which happens to have the same
+	 * FB ID. */
+	liftoff_list_for_each(layer, &output->layers, link) {
+		memset(&layer->fb_info, 0, sizeof(layer->fb_info));
+		layer_cache_fb_info(layer);
+		/* TODO: propagate error? */
 	}
 }
 
@@ -697,6 +762,7 @@ liftoff_output_apply(struct liftoff_output *output, drmModeAtomicReq *req,
 	device = output->device;
 
 	update_layers_priority(device);
+	update_layers_fb_info(output);
 
 	ret = reuse_previous_alloc(output, req, flags);
 	if (ret == 0) {
@@ -704,6 +770,11 @@ liftoff_output_apply(struct liftoff_output *output, drmModeAtomicReq *req,
 		return 0;
 	}
 	log_no_reuse(output);
+
+	/* Reset layers' candidate planes */
+	liftoff_list_for_each(layer, &output->layers, link) {
+		layer_reset_candidate_planes(layer);
+	}
 
 	device->test_commit_counter = 0;
 	output_log_layers(output);

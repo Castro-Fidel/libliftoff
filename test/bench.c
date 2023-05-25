@@ -12,7 +12,7 @@
 #define MAX_LAYERS 128
 
 static struct liftoff_layer *
-add_layer(struct liftoff_output *output, int x, int y, int width, int height)
+add_layer(struct liftoff_output *output, int x, int y, uint32_t width, uint32_t height)
 {
 	uint32_t fb_id;
 	struct liftoff_layer *layer;
@@ -20,14 +20,14 @@ add_layer(struct liftoff_output *output, int x, int y, int width, int height)
 	layer = liftoff_layer_create(output);
 	fb_id = liftoff_mock_drm_create_fb(layer);
 	liftoff_layer_set_property(layer, "FB_ID", fb_id);
-	liftoff_layer_set_property(layer, "CRTC_X", x);
-	liftoff_layer_set_property(layer, "CRTC_Y", y);
-	liftoff_layer_set_property(layer, "CRTC_W", width);
-	liftoff_layer_set_property(layer, "CRTC_H", height);
+	liftoff_layer_set_property(layer, "CRTC_X", (uint64_t)x);
+	liftoff_layer_set_property(layer, "CRTC_Y", (uint64_t)y);
+	liftoff_layer_set_property(layer, "CRTC_W", (uint64_t)width);
+	liftoff_layer_set_property(layer, "CRTC_H", (uint64_t)height);
 	liftoff_layer_set_property(layer, "SRC_X", 0);
 	liftoff_layer_set_property(layer, "SRC_Y", 0);
-	liftoff_layer_set_property(layer, "SRC_W", width << 16);
-	liftoff_layer_set_property(layer, "SRC_H", height << 16);
+	liftoff_layer_set_property(layer, "SRC_W", (uint64_t)width << 16);
+	liftoff_layer_set_property(layer, "SRC_H", (uint64_t)height << 16);
 
 	return layer;
 }
@@ -40,23 +40,24 @@ main(int argc, char *argv[])
 	struct timespec start, end;
 	struct liftoff_mock_plane *mock_planes[MAX_PLANES];
 	size_t i, j;
-	int plane_type;
+	uint64_t plane_type;
 	int drm_fd;
 	struct liftoff_device *device;
 	struct liftoff_output *output;
 	struct liftoff_layer *layers[MAX_LAYERS];
 	drmModeAtomicReq *req;
 	int ret;
+	double dur_ms;
 
 	planes_len = 5;
 	layers_len = 10;
 	while ((opt = getopt(argc, argv, "p:l:")) != -1) {
 		switch (opt) {
 		case 'p':
-			planes_len = atoi(optarg);
+			planes_len = (size_t)atoi(optarg);
 			break;
 		case 'l':
-			layers_len = atoi(optarg);
+			layers_len = (size_t)atoi(optarg);
 			break;
 		default:
 			fprintf(stderr, "usage: %s [-p planes] [-l layers]\n",
@@ -84,7 +85,7 @@ main(int argc, char *argv[])
 	for (i = 0; i < layers_len; i++) {
 		/* Planes don't intersect, so the library can arrange them in
 		 * any order. Testing all combinations takes more time. */
-		layers[i] = add_layer(output, i * 100, i * 100, 100, 100);
+		layers[i] = add_layer(output, (int)i * 100, (int)i * 100, 100, 100);
 		for (j = 0; j < planes_len; j++) {
 			if (j == 1) {
 				/* Make the lowest plane above the primary plane
@@ -108,8 +109,8 @@ main(int argc, char *argv[])
 
 	clock_gettime(CLOCK_MONOTONIC, &end);
 
-	double dur_ms = ((double)end.tv_sec - (double)start.tv_sec) * 1000 +
-			((double)end.tv_nsec - (double)start.tv_nsec) / 1000000;
+	dur_ms = ((double)end.tv_sec - (double)start.tv_sec) * 1000 +
+		 ((double)end.tv_nsec - (double)start.tv_nsec) / 1000000;
 	printf("Plane allocation took %fms\n", dur_ms);
 	printf("Plane allocation performed %zu atomic test commits\n",
 	       liftoff_mock_commit_count);

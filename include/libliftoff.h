@@ -63,12 +63,12 @@ uint32_t
 liftoff_plane_get_id(struct liftoff_plane *plane);
 
 /**
- * Build a layer to plane mapping and append the plane configuration to `req`.
+ * Build a layer to plane mapping and append the plane configuration to req.
  *
- * Callers are expected to commit `req` afterwards and can figure out which
- * layers need composition via `liftoff_layer_needs_composition`.
+ * Callers are expected to commit req afterwards and can figure out which
+ * layers need composition via liftoff_layer_needs_composition().
  *
- * `flags` is the atomic commit flags the caller intends to use.
+ * flags is the atomic commit flags the caller intends to use.
  *
  * Zero is returned on success, negative errno on error.
  */
@@ -108,7 +108,7 @@ liftoff_output_set_composition_layer(struct liftoff_output *output,
  *
  * An output doesn't need composition if all visible layers could be mapped to a
  * plane. In other words, if an output needs composition, at least one layer
- * will return true when `liftoff_layer_needs_composition` is called.
+ * will return true when liftoff_layer_needs_composition() is called.
  */
 bool
 liftoff_output_needs_composition(struct liftoff_output *output);
@@ -145,6 +145,12 @@ liftoff_layer_set_property(struct liftoff_layer *layer, const char *name,
 			   uint64_t value);
 
 /**
+ * Unset a property on the layer.
+ */
+void
+liftoff_layer_unset_property(struct liftoff_layer *layer, const char *name);
+
+/**
  * Force composition on this layer.
  *
  * This unsets any previous FB_ID value. To switch back to direct scan-out, set
@@ -172,6 +178,21 @@ liftoff_layer_needs_composition(struct liftoff_layer *layer);
  */
 struct liftoff_plane *
 liftoff_layer_get_plane(struct liftoff_layer *layer);
+
+/**
+ * Check whether a plane is a candidate for this layer.
+ *
+ * A plane is a candidate if it could potentially be used for the layer with
+ * a buffer with the same size. The buffer may need to be re-allocated with
+ * formats and modifiers accepted by the plane.
+ *
+ * This can be used to implemented a feedback loop: if a layer isn't mapped to
+ * a plane, loop over the candidate planes, and re-allocate the layer's FB
+ * according to the IN_FORMATS property.
+ */
+bool
+liftoff_layer_is_candidate_plane(struct liftoff_layer *layer,
+				 struct liftoff_plane *plane);
 
 enum liftoff_log_priority {
 	LIFTOFF_SILENT,

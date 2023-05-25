@@ -10,6 +10,7 @@ liftoff_device_create(int drm_fd)
 {
 	struct liftoff_device *device;
 	drmModeRes *drm_res;
+	drmModePlaneRes *drm_plane_res;
 
 	device = calloc(1, sizeof(*device));
 	if (device == NULL) {
@@ -34,18 +35,26 @@ liftoff_device_create(int drm_fd)
 		return NULL;
 	}
 
-	device->crtcs = malloc(drm_res->count_crtcs * sizeof(uint32_t));
+	device->crtcs_len = (size_t)drm_res->count_crtcs;
+	device->crtcs = malloc(device->crtcs_len * sizeof(device->crtcs[0]));
 	if (device->crtcs == NULL) {
 		liftoff_log_errno(LIFTOFF_ERROR, "malloc");
 		drmModeFreeResources(drm_res);
 		liftoff_device_destroy(device);
 		return NULL;
 	}
-	device->crtcs_len = drm_res->count_crtcs;
-	memcpy(device->crtcs, drm_res->crtcs,
-	       drm_res->count_crtcs * sizeof(uint32_t));
+	memcpy(device->crtcs, drm_res->crtcs, device->crtcs_len * sizeof(device->crtcs[0]));
 
 	drmModeFreeResources(drm_res);
+
+	drm_plane_res = drmModeGetPlaneResources(device->drm_fd);
+	if (drm_plane_res == NULL) {
+		liftoff_log_errno(LIFTOFF_ERROR, "drmModeGetPlaneResources");
+		liftoff_device_destroy(device);
+		return NULL;
+	}
+	device->planes_cap = drm_plane_res->count_planes;
+	drmModeFreePlaneResources(drm_plane_res);
 
 	return device;
 }
@@ -97,7 +106,7 @@ device_test_commit(struct liftoff_device *device, drmModeAtomicReq *req,
 
 	device->test_commit_counter++;
 
-	flags &= ~DRM_MODE_PAGE_FLIP_EVENT;
+	flags &= ~(uint32_t)DRM_MODE_PAGE_FLIP_EVENT;
 	do {
 		ret = drmModeAtomicCommit(device->drm_fd, req,
 					  DRM_MODE_ATOMIC_TEST_ONLY | flags,
