@@ -3,7 +3,7 @@
 %set_verify_elf_method strict
 
 Name: libliftoff
-Version: 0.2.0
+Version: 0.4.1
 Release: alt1
 Summary: Lightweight KMS plane library
 Group: System/Libraries
@@ -55,5 +55,8 @@ This package contains development files for libliftoff.
 %_pkgconfigdir/*.pc
 
 %changelog
+* Thu May 25 2023 Mikhail Tergoev <fidel@altlinux.org> 0.4.1-alt1
+- new version 0.4.1 (with rpmrb script)
+
 * Tue Feb 22 2022 Aleksei Nikiforov <darktemplar@altlinux.org> 0.2.0-alt1
 - Initial build for ALT.
